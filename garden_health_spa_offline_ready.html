@@ -1,0 +1,518 @@
+<!--
+Garden-Themed Health Web App (Offline-ready) — ENGLISH ONLY
+Single-file source containing both index.html and service worker (sw.js) content.
+
+INSTRUCTIONS:
+1) Save everything ABOVE the line "// ===== sw.js (save as sw.js) =====" as index.html
+2) Save everything BELOW that line as sw.js in the same folder as index.html
+3) Open index.html over a local server (not file://) so the Service Worker can register.
+   Examples:
+     - Python:    python3 -m http.server 5000
+     - Node:      npx http-server -p 5000
+4) Visit http://localhost:5000, click "Start", fill the form, then use the Home hub.
+5) After first load, it will cache and work offline.
+
+COLOR SCHEME: garden green (#2e7d32), sunshine yellow (#ffd54f), tomato red (#e53935)
+ACCESSIBILITY: Semantic HTML, ARIA labels, focus styles, high-contrast text, keyboard nav.
+PERSISTENCE: localStorage remembers profile + hydration + flashcard progress.
+NOTIFICATIONS: In-page only (no system notifications). A corner popup appears in the hydration page if 2 hours pass without logging water.
+-->
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="theme-color" content="#2e7d32" />
+  <title><!-- website name (leave blank for now) --></title>
+  <link rel="manifest" href="data:application/manifest+json,{\"name\":\"Garden Health\",\"short_name\":\"Garden\",\"start_url\":\"./\",\"display\":\"standalone\",\"background_color\":\"#f6fff3\",\"theme_color\":\"#2e7d32\",\"icons\":[]}" />
+  <style>
+    :root{ --green:#2e7d32; --yellow:#ffd54f; --red:#e53935; --soil:#5d4037; --leaf:#66bb6a; --cream:#fffde7; --ink:#143618; }
+    *{box-sizing:border-box}
+    html,body{height:100%;margin:0;font-family:Inter, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, "Apple Color Emoji","Segoe UI Emoji";color:var(--ink);background:linear-gradient(180deg,#f6fff3 0%, #e8f5e9 100%)}
+    a{color:inherit}
+    button{cursor:pointer}
+    .app{min-height:100%;display:grid;grid-template-rows:auto 1fr}
+
+    /* Fixed top-left controls */
+    .topbar{position:fixed;top:12px;left:12px;z-index:50;display:flex;gap:8px;align-items:center}
+    .iconbtn{width:44px;height:44px;border-radius:12px;border:3px solid #1b5e20;background:#c8e6c9;display:grid;place-items:center;box-shadow:0 6px 20px rgba(0,0,0,.12);transition:transform .08s ease}
+    .iconbtn:active{transform:scale(.97)}
+    .iconbtn:focus-visible{outline:4px solid var(--yellow)}
+
+    /* Drawer */
+    .drawer{position:fixed;top:70px;left:12px;width:250px;max-width:80vw;background:#fff;border:3px solid var(--green);border-radius:16px;box-shadow:0 12px 30px rgba(0,0,0,.18);padding:10px;display:none}
+    .drawer.show{display:block}
+    .drawer h3{margin:6px 8px 8px 8px;color:var(--green)}
+    .listbtn{width:100%;padding:12px 14px;margin:6px 0;border-radius:14px;border:2px solid var(--leaf);background:#effbea;font-weight:700}
+    .listbtn:hover{background:#e2f5de}
+
+    /* Help popover */
+    .help{position:fixed;top:70px;left:70px;width:300px;max-width:90vw;background:#fff;border:3px dashed var(--yellow);border-radius:16px;box-shadow:0 12px 30px rgba(0,0,0,.18);padding:14px;display:none}
+    .help.show{display:block}
+
+    /* Pages */
+    .page{display:none;place-items:center;min-height:100vh;padding:80px 16px 24px}
+    .page.active{display:grid}
+
+    /* Landing */
+    .hero{display:grid;gap:18px;justify-items:center;text-align:center}
+    .garden-card{background:linear-gradient(135deg,#c5e1a5,#aed581);border:4px solid var(--green);border-radius:28px;box-shadow:0 20px 50px rgba(46,125,50,.25);padding:26px;max-width:900px}
+    .title{font-size:clamp(28px,3vw,44px);font-weight:900;color:var(--green);letter-spacing:.5px}
+    .subtitle{color:#2f4f2f}
+    .start{font-size:20px;padding:14px 22px;border-radius:16px;border:3px solid var(--green);background:linear-gradient(180deg,#ffd54f,#ffc107);box-shadow:0 8px 20px rgba(0,0,0,.15)}
+
+    /* Form */
+    form{width:min(900px,100%);background:#fff;border:4px solid var(--leaf);border-radius:24px;box-shadow:0 16px 40px rgba(0,0,0,.12);padding:20px}
+    .grid{display:grid;gap:12px}
+    @media(min-width:700px){.grid{grid-template-columns:repeat(2,1fr)}}
+    label{font-weight:700}
+    input,select{width:100%;padding:12px;border-radius:12px;border:2px solid #cfd8dc}
+    .actions{display:flex;gap:10px;justify-content:flex-end;margin-top:10px}
+    .pill{padding:12px 18px;border-radius:999px;border:0;font-weight:800}
+    .primary{background:var(--green);color:#fff}
+    .secondary{background:#e8f5e9;color:#1b5e20;border:2px solid var(--green)}
+
+    /* Hub (third page) */
+    .hub{display:grid;gap:24px;justify-items:center}
+    .fruit-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:24px;width:min(1100px,100%)}
+    .fruit{position:relative;height:200px;border:none;box-shadow:0 16px 40px rgba(0,0,0,.18);transition:transform .1s ease, filter .2s ease}
+    .fruit:focus-visible{outline:6px solid var(--yellow)}
+    .fruit:active{transform:translateY(2px)}
+    .fruit span{position:absolute;bottom:10px;left:50%;transform:translateX(-50%);font-weight:900;text-shadow:0 2px 6px rgba(0,0,0,.2)}
+
+    /* Fruit shapes */
+    .btn-apple{background:
+      radial-gradient(circle at 70% 25%, #7cb342 0 16%, transparent 17%),
+      radial-gradient(circle at 30% 25%, #7cb342 0 16%, transparent 17%),
+      radial-gradient(circle at 50% 5%, #33691e 0 8%, transparent 9%),
+      radial-gradient(circle at 50% 40%, #e53935 0 60%, #b71c1c 61%);
+      border-radius:36% 36% 44% 44%/46% 46% 54% 54%;}
+    .btn-banana{background:
+      radial-gradient(60% 90% at 30% 50%, #ffd54f 0 60%, #ffa000 61%),
+      radial-gradient(20% 30% at 30% 20%, #ffecb3 0 60%, transparent 61%);
+      border-radius:100% 0 80% 40%/100% 0 50% 60%; transform:rotate(-12deg)}
+    .btn-tomato{background:
+      radial-gradient(circle at 50% 10%, #2e7d32 0 10%, transparent 11%),
+      radial-gradient(circle at 50% 30%, #43a047 0 8%, transparent 9%),
+      radial-gradient(60% 60% at 50% 55%, #ff5252 0 60%, #e53935 61%);
+      border-radius:50%}
+    .btn-drop{background:
+      radial-gradient(70% 70% at 60% 30%, #81d4fa 0 60%, #29b6f6 61%),
+      radial-gradient(30% 30% at 30% 60%, #e1f5fe 0 50%, transparent 51%);
+      clip-path:path('M100 0 C60 50, 0 70, 100 200 C200 70, 140 50, 100 0 Z');}
+
+    /* Section shells */
+    .section{width:min(1100px,100%);background:#fff;border:4px solid var(--green);border-radius:24px;padding:18px;box-shadow:0 16px 40px rgba(0,0,0,.12)}
+    .section h2{margin:8px 0;color:var(--green)}
+
+    /* Tables */
+    table{width:100%;border-collapse:separate;border-spacing:0 8px}
+    th,td{padding:10px 12px;background:#f7fff3}
+    th{background:#dcedc8;color:#1b5e20;text-align:left}
+
+    /* Flashcards */
+    .flash{display:grid;gap:14px}
+    .card{background:linear-gradient(135deg,#fff59d,#fffde7);border:3px solid var(--yellow);border-radius:18px;padding:16px}
+    .myth{color:var(--red);font-weight:900}
+    .fact{color:var(--green);font-weight:900}
+
+    /* Toast */
+    .toast{position:fixed;bottom:20px;left:50%;transform:translateX(-50%);background:#1b5e20;color:#fff;padding:12px 16px;border-radius:999px;box-shadow:0 8px 20px rgba(0,0,0,.15);opacity:0;transition:opacity .2s ease}
+    .toast.show{opacity:1}
+
+    /* Corner notification (in-page only) */
+    .corner{position:fixed;top:16px;right:16px;background:#1b5e20;color:#fff;padding:12px 16px;border-radius:12px;box-shadow:0 8px 20px rgba(0,0,0,.2);opacity:0;pointer-events:none;transition:opacity .2s ease}
+    .corner.show{opacity:1}
+
+    /* Focus & skip */
+    .skip{position:absolute;left:-9999px;top:auto;width:1px;height:1px;overflow:hidden}
+    .skip:focus{position:static;width:auto;height:auto;background:#fff;padding:8px;border-radius:8px}
+  </style>
+</head>
+<body>
+  <div class="app" id="app" aria-live="polite">
+    <a href="#main" class="skip">Skip to content</a>
+
+    <!-- Fixed controls -->
+    <div class="topbar" aria-label="Fixed controls">
+      <button class="iconbtn" id="hamburger" aria-label="Menu">
+        <svg width="22" height="22" viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M3 6h18v2H3zm0 5h18v2H3zm0 5h18v2H3z"/></svg>
+      </button>
+      <button class="iconbtn" id="helpbtn" aria-label="Help">
+        <svg width="22" height="22" viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M10.5 18h3v-3h-3v3ZM12 2a10 10 0 1 0 10 10A10.013 10.013 0 0 0 12 2Zm0 15a1.5 1.5 0 1 1 1.5-1.5A1.5 1.5 0 0 1 12 17.5Zm2.07-7.75-.9.92A2.5 2.5 0 0 0 12.5 13h-1v-.5a3.5 3.5 0 0 1 1.02-2.49l1.24-1.26A1.5 1.5 0 0 0 12.5 6a1.5 1.5 0 0 0-1.5 1.5H9a3.5 3.5 0 1 1 7 0a3 3 0 0 1-.93 2.25Z"/></svg>
+      </button>
+      <div class="drawer" id="drawer" role="dialog" aria-modal="false" aria-label="Menu Drawer">
+        <h3>Menu</h3>
+        <button class="listbtn" data-nav="home">Home</button>
+        <button class="listbtn" data-nav="facts">Fun facts & Myths vs. Facts</button>
+        <button class="listbtn" data-nav="reset">Reset</button>
+      </div>
+      <div class="help" id="help" role="dialog" aria-modal="false" aria-label="About & Disclaimer">
+        <h3>About & Disclaimer</h3>
+        <p><strong>Purpose:</strong> A playful garden-themed health app featuring BMI, tips, meal plan, and hydration tracker.</p>
+        <p><strong>Disclaimer:</strong> This website is for <em>educational purposes</em> only. Always consult a healthcare professional for medical advice.</p>
+      </div>
+    </div>
+
+    <!-- Pages -->
+    <main id="main">
+      <!-- First page: Landing -->
+      <section class="page active" id="page-landing">
+        <div class="hero">
+          <div class="garden-card" role="img" aria-label="Garden background">
+            <h1 class="title">Welcome to your Garden of Health</h1>
+            <p class="subtitle">A cheerful garden-themed app for your wellness journey 🌿🍅💧</p>
+            <button class="start pill" id="startBtn" aria-describedby="startHelp">Start</button>
+            <small id="startHelp">After clicking, you'll go to the personal info form.</small>
+          </div>
+        </div>
+      </section>
+
+      <!-- Second page: Form -->
+      <section class="page" id="page-form" aria-label="Personal Info Form">
+        <form id="infoForm">
+          <h2>Basic Info</h2>
+          <div class="grid">
+            <label>Weight (kg)
+              <input required type="number" step="0.1" id="weight" min="20" max="400" autocomplete="off" />
+            </label>
+            <label>Height (cm)
+              <input required type="number" step="0.1" id="height" min="80" max="250" autocomplete="off" />
+            </label>
+            <label>Age
+              <input required type="number" id="age" min="5" max="120" />
+            </label>
+            <label>Sex
+              <select id="sex" required>
+                <option value="">-- Select --</option>
+                <option>Female</option>
+                <option>Male</option>
+                <option>Other</option>
+              </select>
+            </label>
+            <label>Usual Sleep Duration (hours)
+              <input required type="number" id="sleep" min="0" max="24" />
+            </label>
+            <label>Activity Level
+              <select id="activity" required>
+                <option value="">-- Select --</option>
+                <option value="sedentary">Sedentary (little movement)</option>
+                <option value="light">Light (1–3x/week)</option>
+                <option value="moderate">Moderate (3–5x/week)</option>
+                <option value="active">Active (6–7x/week)</option>
+              </select>
+            </label>
+          </div>
+          <div class="actions">
+            <button type="button" class="pill secondary" id="cancelForm">Cancel</button>
+            <button type="submit" class="pill primary">Save & Continue</button>
+          </div>
+        </form>
+      </section>
+
+      <!-- Third page: Hub with 4 buttons -->
+      <section class="page" id="page-hub" aria-label="Home Hub">
+        <div class="hub">
+          <header class="garden-card" style="text-align:center">
+            <h2>Garden Hub</h2>
+            <p>Tap the fruit/vegetable buttons below to open sections.</p>
+          </header>
+          <div class="fruit-grid" role="list">
+            <button class="fruit btn-apple" role="listitem" data-open="bmi" aria-label="BMI results and category">
+              <span>BMI + Category</span>
+            </button>
+            <button class="fruit btn-banana" role="listitem" data-open="tips" aria-label="Personalized health tips">
+              <span>Health Tips</span>
+            </button>
+            <button class="fruit btn-tomato" role="listitem" data-open="meal" aria-label="Weekly meal plan table">
+              <span>Weekly Meal Plan</span>
+            </button>
+            <button class="fruit btn-drop" role="listitem" data-open="water" aria-label="Hydration tracker (water drop)">
+              <span>Hydration</span>
+            </button>
+          </div>
+        </div>
+      </section>
+
+      <!-- BMI Section -->
+      <section class="page" id="page-bmi">
+        <div class="section">
+          <h2>BMI Results & Category</h2>
+          <p id="bmiOut">…</p>
+          <ul id="bmiSuggest"></ul>
+          <div class="actions">
+            <button class="pill secondary" data-nav="home">Back to Hub</button>
+          </div>
+        </div>
+      </section>
+
+      <!-- Health Tips Section -->
+      <section class="page" id="page-tips">
+        <div class="section">
+          <h2>Personalized Health Tips</h2>
+          <ul id="tipsOut"></ul>
+          <div class="actions">
+            <button class="pill secondary" data-nav="home">Back to Hub</button>
+          </div>
+        </div>
+      </section>
+
+      <!-- Meal Plan Section -->
+      <section class="page" id="page-meal">
+        <div class="section">
+          <h2>Weekly Meal Plan</h2>
+          <div id="mealTable">…</div>
+          <div class="actions">
+            <button class="pill secondary" data-nav="home">Back to Hub</button>
+          </div>
+        </div>
+      </section>
+
+      <!-- Hydration Section -->
+      <section class="page" id="page-water">
+        <div class="section">
+          <h2>Hydration Tracker</h2>
+          <p>Daily glasses of water (8 oz / ~250 ml per glass)</p>
+          <div class="actions">
+            <button class="pill primary" id="addGlass">Add Glass</button>
+            <button class="pill secondary" id="resetGlass">Reset</button>
+          </div>
+          <p id="waterCount">Today: 0 glasses</p>
+          <small id="waterHint">We'll remind you if 2 hours pass without logging water. (In-page popup only.)</small>
+          <div class="actions">
+            <button class="pill secondary" data-nav="home">Back to Hub</button>
+          </div>
+        </div>
+      </section>
+
+      <!-- Facts Section (from drawer) -->
+      <section class="page" id="page-facts">
+        <div class="section">
+          <h2>Did You Know? + Myths vs Facts</h2>
+          <div class="flash">
+            <div class="card" id="flashCard">
+              <div id="flashMedia" aria-hidden="true"></div>
+              <p id="flashText">…</p>
+            </div>
+            <div class="actions">
+              <button class="pill secondary" id="prevFlash">Previous</button>
+              <button class="pill primary" id="nextFlash">Next</button>
+              <button class="pill" data-nav="home">Home</button>
+            </div>
+          </div>
+        </div>
+      </section>
+    </main>
+
+    <div class="toast" id="toast" role="status" aria-live="polite"></div>
+    <div class="corner" id="corner" role="status" aria-live="polite"></div>
+  </div>
+
+  <script>
+    // ------ Utility helpers ------
+    const $ = (sel, ctx=document) => ctx.querySelector(sel);
+    const $$ = (sel, ctx=document) => Array.from(ctx.querySelectorAll(sel));
+    const store = {
+      get:k=>{try{return JSON.parse(localStorage.getItem(k))}catch{return null}},
+      set:(k,v)=>localStorage.setItem(k,JSON.stringify(v)),
+      del:k=>localStorage.removeItem(k)
+    };
+    const toast = (msg)=>{const t=$('#toast'); t.textContent=msg; t.classList.add('show'); setTimeout(()=>t.classList.remove('show'), 2200)}
+
+    // Track current page for in-page notifications
+    let currentPage = 'landing';
+    function showPage(id){
+      $$('.page').forEach(p=>p.classList.remove('active'));
+      const el = $('#page-'+id);
+      el?.classList.add('active');
+      currentPage = id; // update
+    }
+
+    // ------ Service Worker registration ------
+    if('serviceWorker' in navigator){
+      window.addEventListener('load',()=>{
+        navigator.serviceWorker.register('./sw.js').catch(()=>{});
+      });
+    }
+
+    // ------ Top controls behavior ------
+    $('#hamburger').addEventListener('click',()=>$('#drawer').classList.toggle('show'));
+    $('#helpbtn').addEventListener('click',()=>$('#help').classList.toggle('show'));
+    $('#drawer').addEventListener('click', (e)=>{
+      if(e.target.matches('.listbtn')){
+        const nav=e.target.dataset.nav;
+        $('#drawer').classList.remove('show');
+        if(nav==='home') showPage('hub');
+        if(nav==='facts') {showPage('facts'); renderFlash()}
+        if(nav==='reset') resetAll();
+      }
+    })
+
+    // ------ Landing to Form ------
+    $('#startBtn').addEventListener('click',()=>{ showPage('form'); })
+    $('#cancelForm').addEventListener('click',()=>{ showPage('landing'); })
+
+    // ------ Form submit ------
+    $('#infoForm').addEventListener('submit', (e)=>{
+      e.preventDefault();
+      const profile={
+        weight: +$('#weight').value,
+        height: +$('#height').value,
+        age: +$('#age').value,
+        sex: $('#sex').value,
+        sleep: +$('#sleep').value,
+        activity: $('#activity').value,
+      };
+      store.set('profile', profile);
+      toast('Saved!');
+      showPage('hub');
+    })
+
+    // ------ Hub buttons open sections ------
+    $('#page-hub').addEventListener('click',(e)=>{
+      const btn = e.target.closest('[data-open]');
+      if(!btn) return;
+      const pg = btn.dataset.open;
+      if(pg==='bmi'){ renderBMI(); showPage('bmi'); }
+      if(pg==='tips'){ renderTips(); showPage('tips'); }
+      if(pg==='meal'){ renderMeal(); showPage('meal'); }
+      if(pg==='water'){ renderWater(); showPage('water'); }
+    })
+
+    // Back to hub
+    $$('[data-nav="home"]').forEach(b=>b.addEventListener('click',()=>showPage('hub')));
+
+    // ------ BMI logic ------
+    function getBMI(w, hcm){ const m = hcm/100; return +(w/(m*m)).toFixed(1) }
+    function bmiCategory(b){ if(b<18.5) return 'Underweight'; if(b<25) return 'Normal'; return 'Overweight' }
+    function renderBMI(){
+      const p = store.get('profile'); if(!p){ showPage('form'); return; }
+      const bmi = getBMI(p.weight, p.height);
+      const cat = bmiCategory(bmi);
+      $('#bmiOut').textContent = `BMI: ${bmi} (${cat})`;
+      const ul = $('#bmiSuggest'); ul.innerHTML='';
+      const tips = {
+        Underweight: ["Add healthy calories like nuts and whole grains.", "Include protein in each meal.", "Do strength training 2–3x/week."],
+        Normal: ["Keep up your balanced routine and hydration.", "Maintain ~150 mins moderate activity/week.", "Manage stress and sleep."],
+        Overweight: ["Choose portion control and 20-min walks 3x/week.", "Load up on vegetables and whole foods.", "Try light strength + cardio."]
+      }[cat];
+      tips.forEach(t=>{const li=document.createElement('li'); li.textContent=t; ul.appendChild(li)})
+    }
+
+    // ------ Tips logic (sleep + activity) ------
+    function renderTips(){
+      const p = store.get('profile'); if(!p){ showPage('form'); return; }
+      const out = $('#tipsOut'); out.innerHTML='';
+      // Sleep
+      if(p.sleep<6) out.append(li(`You're sleeping ${p.sleep} hrs — try 7–8 hrs for better energy.`));
+      else if(p.sleep>9) out.append(li(`You're sleeping ${p.sleep} hrs — evaluate sleep quality; 7–9 hrs is typical for adults.`));
+      else out.append(li(`Great! Keep maintaining ${p.sleep} hrs of quality sleep.`));
+      // Activity
+      const actMsg={
+        sedentary:"Start with 10–15 min walks daily at a comfortable pace.",
+        light:"Nice! Add 1 day of strength training.",
+        moderate:"Solid! Mix in mobility and recovery days.",
+        active:"Awesome! Prioritize rest, hydration, and protein.",
+      }[p.activity]||"Choose a level to get tailored advice.";
+      out.append(li(actMsg));
+    }
+
+    function li(text){ const el=document.createElement('li'); el.textContent=text; return el }
+
+    // ------ Meal plan (simple rules) ------
+    function renderMeal(){
+      const p = store.get('profile'); if(!p){ showPage('form'); return; }
+      const bmi = getBMI(p.weight, p.height);
+      const cat = bmiCategory(bmi);
+      const ageBand = p.age<18? 'youth' : p.age<50? 'adult' : 'senior';
+      const base = {
+        youth:{ breakfast:["Oatmeal + banana","Egg + wholegrain toast"], lunch:["Chicken tinola + brown rice","Tortang talong + rice"], snack:["Banana + peanuts","Yogurt"], dinner:["Fish paksiw + vegetables","Ginisang sayote + tofu"] },
+        adult:{ breakfast:["Oats + nuts + fruit","Egg + tomato + toast"], lunch:["Grilled chicken + veggies","Ginisang monggo + malunggay"], snack:["Fruit + nuts","Baked kangkong chips"], dinner:["Bangus + eggplant salad","Lean chicken adobo + veg"] },
+        senior:{ breakfast:["Congee + egg","Oatmeal + fruit"], lunch:["Fish sinigang + veg","Chicken sotanghon"], snack:["Soft fruits","Yogurt"], dinner:["Ginisang upo + tofu","Tinola (light salt)"] }
+      }[ageBand];
+      const adjust = (arr)=>{
+        if(cat==='Underweight') return arr.map(x=>x+" + extra healthy fats (nuts/avocado)");
+        if(cat==='Overweight') return arr.map(x=>x.replace(/ .*/, '')+" (smaller portion, extra veggies)");
+        return arr;
+      }
+      const plan = {
+        Mon:{breakfast:adjust(base.breakfast)[0], lunch:adjust(base.lunch)[0], snack:adjust(base.snack)[0], dinner:adjust(base.dinner)[0]},
+        Tue:{breakfast:adjust(base.breakfast)[1], lunch:adjust(base.lunch)[1], snack:adjust(base.snack)[1], dinner:adjust(base.dinner)[1]},
+        Wed:{breakfast:adjust(base.breakfast)[0], lunch:adjust(base.lunch)[0], snack:adjust(base.snack)[0], dinner:adjust(base.dinner)[0]},
+        Thu:{breakfast:adjust(base.breakfast)[1], lunch:adjust(base.lunch)[1], snack:adjust(base.snack)[1], dinner:adjust(base.dinner)[1]},
+        Fri:{breakfast:adjust(base.breakfast)[0], lunch:adjust(base.lunch)[0], snack:adjust(base.snack)[0], dinner:adjust(base.dinner)[0]},
+        Sat:{breakfast:adjust(base.breakfast)[1], lunch:adjust(base.lunch)[1], snack:adjust(base.snack)[1], dinner:adjust(base.dinner)[1]},
+        Sun:{breakfast:adjust(base.breakfast)[0], lunch:adjust(base.lunch)[0], snack:adjust(base.snack)[0], dinner:adjust(base.dinner)[0]},
+      };
+      const days=Object.keys(plan);
+      let html = '<table aria-label="Weekly meal plan"><thead><tr><th>Day</th><th>Breakfast</th><th>Lunch</th><th>Snack</th><th>Dinner</th></tr></thead><tbody>';
+      days.forEach(d=>{const r=plan[d]; html+=`<tr><td><strong>${d}</strong></td><td>${r.breakfast}</td><td>${r.lunch}</td><td>${r.snack}</td><td>${r.dinner}</td></tr>`})
+      html+='</tbody></table>';
+      $('#mealTable').innerHTML = html;
+    }
+
+    // ------ Hydration logic ------
+    const DAYKEY = ()=> new Date().toISOString().slice(0,10);
+    function getHydro(){ return store.get('hydro') || {lastLog:null, perDay:{}} }
+    function renderWater(){ const h = getHydro(); const d=DAYKEY(); const n = h.perDay[d]||0; $('#waterCount').textContent=`Today: ${n} glasses`; hideCorner(); }
+    function addGlass(){ const h=getHydro(); const d=DAYKEY(); h.perDay[d]=(h.perDay[d]||0)+1; h.lastLog=Date.now(); store.set('hydro',h); renderWater(); toast('Nice! +1 glass 💧') }
+    function resetGlass(){ const h=getHydro(); const d=DAYKEY(); h.perDay[d]=0; h.lastLog=Date.now(); store.set('hydro',h); renderWater(); }
+    $('#addGlass').addEventListener('click', addGlass);
+    $('#resetGlass').addEventListener('click', resetGlass);
+
+    // In-page corner popup only (no system notifications)
+    const corner = $('#corner');
+    function showCorner(msg){ corner.textContent = msg; corner.classList.add('show'); }
+    function hideCorner(){ corner.classList.remove('show'); }
+
+    // 2-hour reminder checker — only visible in Hydration page
+    setInterval(()=>{
+      if(currentPage !== 'water') { hideCorner(); return; }
+      const h=getHydro(); const last=h.lastLog||0; const TWO_H=2*60*60*1000;
+      if(Date.now()-last > TWO_H){
+        showCorner("It's been 2 hours since you last drank water — drink up!");
+      } else { hideCorner(); }
+    }, 60*1000); // check every 1 min
+
+    // ------ Flashcards ------
+    const CARDS = store.get('cards') || [
+      {type:'fact', text:'Did you know? Leafy greens are rich in folate and fiber that support heart health.'},
+      {type:'myth', text:'Myth: Carbs make you gain weight. Fact: Excess calories of any source lead to weight gain; choose whole grains.'},
+      {type:'myth', text:'Myth: Eating late always causes weight gain. Fact: Overall daily balance matters more—plus sleep quality.'},
+      {type:'fact', text:'Tomatoes contain lycopene, an antioxidant linked with cell protection.'},
+    ];
+    let idx = store.get('cards_idx') || 0;
+    function renderFlash(){
+      const c=CARDS[idx % CARDS.length];
+      $('#flashText').innerHTML = `<span class="${c.type}">${c.type==='myth'?'Myth vs Fact:':'Fact:'}</span> ${c.text}`;
+      $('#flashMedia').innerHTML = '';
+      store.set('cards_idx', idx);
+    }
+    $('#nextFlash').addEventListener('click',()=>{ idx=(idx+1)%CARDS.length; renderFlash() })
+    $('#prevFlash').addEventListener('click',()=>{ idx=(idx-1+CARDS.length)%CARDS.length; renderFlash() })
+
+    // ------ Reset ------
+    function resetAll(){
+      localStorage.clear();
+      store.set('cards', CARDS);
+      idx=0; store.set('cards_idx',0);
+      $('#infoForm').reset();
+      toast('Reset done.');
+      showPage('form');
+    }
+
+    // ------ Load persisted profile into form ------
+    (function init(){
+      const p=store.get('profile');
+      if(p){ $('#weight').value=p.weight; $('#height').value=p.height; $('#age').value=p.age; $('#sex').value=p.sex; $('#sleep').value=p.sleep; $('#activity').value=p.activity; }
+    })();
+  </script>
+</body>
+</html>
+
+// ===== sw.js (save as sw.js) =====
+const CACHE_NAME='garden-health-cache-v1';
+const ASSETS=[ './', './index.html', './sw.js' ];
+self.addEventListener('install',e=>{ e.waitUntil(caches.open(CACHE_NAME).then(c=>c.addAll(ASSETS)).then(()=>self.skipWaiting())); });
+self.addEventListener('activate',e=>{ e.waitUntil(caches.keys().then(keys=>Promise.all(keys.filter(k=>k!==CACHE_NAME).map(k=>caches.delete(k))))); self.clients.claim(); });
+self.addEventListener('fetch',e=>{ const req=e.request; e.respondWith( caches.match(req).then(cached=>cached||fetch(req).then(res=>{ const copy=res.clone(); caches.open(CACHE_NAME).then(c=>c.put(req,copy)); return res; }).catch(()=>caches.match('./index.html'))) ); });
